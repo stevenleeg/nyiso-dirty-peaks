@@ -1,0 +1,76 @@
+---
+title: "Scrape Generation Data"
+output: html_document
+---
+
+This script will scrape load generation data from NYISO's [public archive](http://mis.nyiso.com/public/P-63list.htm).
+
+```{r}
+library(httr)
+library(xml2)
+library(stringr)
+library(rlist)
+archive_html <- httr::content(httr::GET('http://mis.nyiso.com/public/P-63list.htm'))
+
+archive_html
+```
+
+Next we'll need to extract out the list of available dates, doing some filtering along the way to separate out the realtime and archived fuel mixes
+
+```{r}
+transform_anchor <- function(node) {
+  if(identical(nchar(xml_text(node)), integer(0))) {
+    return(NULL)
+  }
+  
+  # Parse out the useful data
+  url <- paste("http://mis.nyiso.com/public/", xml_attr(node, "href"), sep = "")
+  is_archive <- grepl(".zip", url, fixed = TRUE)
+  date_components <- list.reverse(str_split(xml_text(node), "-")[[1]])
+  date <- paste(date_components, collapse="-")
+  year <- strtoi(date_components[1])
+  save_path <- paste("./scraped_data/zips/generation/", date, ".zip", sep = "")
+  
+  list(date = date, year = year, url = url, is_archive = is_archive, save_path = save_path)
+}
+
+all_links <- xml_find_all(archive_html, "//td/a")
+available_data <- lapply(all_links, transform_anchor)
+
+# Filter out realtime data since we don't really need that
+archives <- Filter(function(x) { x$is_archive == TRUE }, available_data)
+
+INTERESTING_YEARS <- c(2019, 2020, 2021)
+
+# Filter out the years that aren't contained in that list
+archives <- Filter(function(x) { x$year %in% INTERESTING_YEARS }, archives)
+
+# Also filter out the latest archive, as that's likely an incomplete current month
+archives <- archives[0:-1]
+length(archives)
+```
+
+Now we have a list of available archives to work with (each archive file being a month of generation data), let's download their .zip files:
+
+```{r}
+for (archive in archives) {
+  GET(archive$url, write_disk(archive$save_path, overwrite=TRUE))
+  print(paste("Downloaded", archive$save_path))
+}
+
+print("Done!")
+```
+
+We can't really do much with a .zip file, so we'll need to extract the contents of each .zip into our csvs directory:
+
+```{r}
+output_to <- "./scraped_data/csvs/generation"
+unzip_archive <- function(archive) {
+  unzip(archive$save_path, exdir = output_to, overwrite = TRUE)
+  print(paste("Unzipped", archive$save_path))
+}
+
+lapply(archives, unzip_archive)
+```
+
+And that'll do it! You should now see a boatload of CSV files in `scraped_data/csvs/generation` each containing 24 hours of generation mix at 5 minute intervals.

@@ -1,0 +1,107 @@
+---
+title: "3. Aggregate and Join"
+output: html_document
+---
+```{r}
+library(tidyverse)
+library(lubridate)
+
+FUEL_COLUMNS <- c("dual_fuel", "hydro", "natural_gas", "nuclear",
+                  "other_fossil_fuels", "other_renewables", "wind")
+```
+
+Now that we've scraped all of the data we need we'll need to do a bit of processing to get it into the format that's easy to run our analysis on.
+
+# Aggregating Load
+The load data we've downloaded is segregated by load zones within NYISO (corresponding to various regions of the state). Since generation data is at the grid level (not zone level), we'll want to aggregate the load in each zone at each increment into a single TOTAL value. We'll also roll up the data to go from 5 minute intervals to 1 hour intervals to remove unneeded granularity.
+
+```{r}
+load_files <- list.files("./scraped_data/csvs/load")
+
+aggregate_load <- function(prev, filename) {
+  path <- paste("./scraped_data/csvs/load/", filename, sep="")
+  df <- read_csv(path,
+                 col_types = cols(`Time Stamp` = col_datetime(format = "%m/%d/%Y %H:%M:%S")))
+  
+  day <- df %>%
+    janitor::clean_names() %>%
+    rename(load_zone = name) %>%
+    # There are some moments where NYISO decides to switch from 5 minute intervals
+    # random sample times. Why they do this? Who knows, but let's filter out any
+    # values that don't have minute values which are multiples of 5
+    filter(as.numeric(strftime(time_stamp, "%M")) %% 5 == 0) %>%
+    select(time_stamp, load_zone, load) %>%
+    group_by(time_stamp=floor_date(time_stamp, "1 hour")) %>%
+    summarize(load = sum(load))
+  
+  if (is.null(prev)) {
+    return(day);
+  }
+  
+  bind_rows(prev, day)
+}
+
+combined_load_data <- Reduce(aggregate_load, load_files, init = NULL)
+
+# Plot it for funsies
+one_day <- combined_load_data %>% filter(floor_date(time_stamp, "1 day") == as.Date("2019-07-06"))
+
+ggplot(one_day) +
+  aes(x = time_stamp, y = load) +
+  geom_line()
+```
+
+# Aggregate generation
+As mentioned previously, our generation data is for the full grid by default (no load zones), so all we'll need to do is roll it up from 5 minute interval data to hourly intervals.
+
+```{r}
+generation_files <- list.files("./scraped_data/csvs/generation")
+
+aggregate_gen <- function(prev, filename) {
+  path <- paste("./scraped_data/csvs/generation/", filename, sep="")
+  df <- read_csv(path,
+                 col_types = cols(`Time Stamp` = col_datetime(format = "%m/%d/%Y %H:%M:%S")))
+  
+  day <- df %>%
+    janitor::clean_names() %>%
+    select(time_stamp, fuel_category, gen_mw) %>%
+    # There are some moments where NYISO decides to switch from 5 minute intervals
+    # random sample times. Why they do this? Who knows, but let's filter out any
+    # values that don't have minute values which are multiples of 5
+    filter(as.numeric(strftime(time_stamp, "%M")) %% 5 == 0) %>%
+    # Roll up to hourly resolution, summing up the 5 minute intervals
+    group_by(time_stamp=floor_date(time_stamp, "1 hour"), fuel_category) %>%
+    summarize(gen_mw = sum(gen_mw)) %>%
+    ungroup
+  
+  if (is.null(prev)) {
+    return(day);
+  }
+  
+  bind_rows(prev, day)
+}
+
+combined_gen_data <- Reduce(aggregate_gen, generation_files, init = NULL) %>%
+  group_by(time_stamp = floor_date(time_stamp, "1 hour"), fuel_category) %>%
+  summarize(gen_mw = sum(gen_mw)) %>%
+  pivot_wider(
+    id_cols = time_stamp,
+    names_from = fuel_category,
+    values_from = gen_mw,
+    values_fill = NULL,
+  ) %>%
+  janitor::clean_names()
+
+combined_gen_data
+```
+
+Finally, let's join the two datasets together by their timestamps and write the results to a CSV that we can access later on.
+
+```{r}
+combined <- inner_join(
+  x = combined_gen_data,
+  y = combined_load_data,
+)
+
+write.csv(combined, "./derived_data/combined_gen_load.csv")
+```

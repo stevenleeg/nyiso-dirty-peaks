@@ -1,0 +1,74 @@
+---
+title: "Scrape Load Data"
+output: html_document
+---
+
+Similar to our generation scraping script, this time around we're going to scrape and export data from NYISO's [load data archive](http://mis.nyiso.com/public/P-58Blist.htm) to our csvs directory.
+
+```{r}
+library(httr)
+library(xml2)
+library(stringr)
+library(rlist)
+archive_html <- httr::content(httr::GET('http://mis.nyiso.com/public/P-58Blist.htm'))
+
+archive_html
+```
+
+Next we'll transform the HTML webpage into a list of archives:
+
+```{r}
+transform_anchor <- function(node) {
+  if(identical(nchar(xml_text(node)), integer(0))) {
+    return(NULL)
+  }
+  
+  # Parse out the useful data
+  url <- paste("http://mis.nyiso.com/public/", xml_attr(node, "href"), sep = "")
+  is_archive <- grepl(".zip", url, fixed = TRUE)
+  date_components <- list.reverse(str_split(xml_text(node), "-")[[1]])
+  date <- paste(date_components, collapse="-")
+  year <- strtoi(date_components[1])
+  save_path <- paste("./scraped_data/zips/load/", date, ".zip", sep = "")
+  
+  list(date = date, year = year, url = url, is_archive = is_archive, save_path = save_path)
+}
+
+all_links <- xml_find_all(archive_html, "//td/a")
+available_data <- lapply(all_links, transform_anchor)
+
+# Filter out realtime data since we don't really need that
+archives <- Filter(function(x) { x$is_archive == TRUE }, available_data)
+
+INTERESTING_YEARS <- c(2019, 2020, 2021)
+
+# Filter out the years that aren't contained in that list
+archives <- Filter(function(x) { x$year %in% INTERESTING_YEARS }, archives)
+
+# Also filter out the latest archive, as that's likely an incomplete current month
+archives <- archives[0:-1]
+length(archives)
+```
+
+Let's download each of the zips:
+
+```{r}
+for (archive in archives) {
+  GET(archive$url, write_disk(archive$save_path, overwrite=TRUE))
+  print(paste("Downloaded", archive$save_path))
+}
+
+print("Done!")
+```
+
+... and finally, extract the zip files to csvs:
+
+```{r}
+output_to <- "./scraped_data/csvs/load"
+unzip_archive <- function(archive) {
+  unzip(archive$save_path, exdir = output_to, overwrite = TRUE)
+  print(paste("Unzipped", archive$save_path))
+}
+
+lapply(archives, unzip_archive)
+```

@@ -1,0 +1,11 @@
+.DS_Store
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+derived_data/*.csv
+derived_data/csvs
+derived_data/zips
+scraped_data/csvs
+scraped_data/zips
+Article.docx
