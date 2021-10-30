@@ -9,3 +9,4 @@ derived_data/zips
 scraped_data/csvs
 scraped_data/zips
 Article.docx
+*.html

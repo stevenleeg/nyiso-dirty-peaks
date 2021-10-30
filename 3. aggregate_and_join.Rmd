@@ -5,9 +5,6 @@ output: html_document
 ```{r}
 library(tidyverse)
 library(lubridate)
-
-FUEL_COLUMNS <- c("dual_fuel", "hydro", "natural_gas", "nuclear",
-                  "other_fossil_fuels", "other_renewables", "wind")
 ```
 
 Now that we've scraped all of the data we need we'll need to do a bit of processing to get it into the format that's easy to run our analysis on.
@@ -25,7 +22,7 @@ aggregate_load <- function(prev, filename) {
   
   day <- df %>%
     janitor::clean_names() %>%
-    rename(load_zone = name) %>%
+    rename(load_zone = name, load = integrated_load) %>%
     # There are some moments where NYISO decides to switch from 5 minute intervals
     # random sample times. Why they do this? Who knows, but let's filter out any
     # values that don't have minute values which are multiples of 5

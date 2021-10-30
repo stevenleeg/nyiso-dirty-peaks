@@ -8,7 +8,15 @@ library(tidyverse)
 library(lubridate)
 library(ggplot2)
 library(scales)
+library(gridExtra)
+source("./helper_functions.R")
+```
 
+The final step is going to be loading in the data, running through some analysis, and generating the plots necessary for the article. Note that the bulk of the heavy lifting for this step is in the separate `helper_functions.R` file.
+
+Let's start by defining some helpful constants:
+
+```{r}
 ###
 # Constants
 #
@@ -20,226 +28,115 @@ COLD_MONTHS <- c(11, 12, 1, 2, 3, 4)
 
 CLEAN_GEN_COLOR <- "#5EBD3E"
 DIRTY_GEN_COLOR <- "#766031"
+```
 
-###
-# Helper functions
-#
-select_range <- function(data, start_date, end_date = NULL) {
-  # Inputs a load/gen dataset and filters it, returning only the observations
-  # for a given date
-  start_date <- as.Date(start_date)
-  
-  if (is.null(end_date)) {
-    end_date = start_date
-  } else {
-    end_date <- as.Date(end_date)
-  }
-  
-  data %>% 
-    filter(time_stamp >= start_date) %>%
-    filter(time_stamp < end_date + days(1))
-}
+Next up, load in the data we generated from the previous step.
 
-highlight_range <- function(data, start_date, end_date) {
-  # Adds an alpha column that makes certain members more/less transparent than
-  # others when plotted
-  start_date <- as.Date(start_date)
-  end_date <- as.Date(end_date)
-  data %>%
-    mutate(highlighted = if_else(
-      time_stamp >= start_date & time_stamp < end_date, 
-      TRUE,
-      FALSE,
-    ))
-}
-
-rollup_daily <- function(data) {
-  # Rolls up the data from hourly to daily to make charts over long periods of
-  # time more readable
-  data %>%
-    group_by(time_stamp = floor_date(time_stamp, "1 day")) %>%
-    summarize(across(any_of(append(FUEL_COLUMNS, "load")), ~ sum(.x))) %>%
-    ungroup
-}
-
-plot_line_per_fuel <- function(data) {
-  # Plots each fuel source's output as a line on a graph
-  ggplot(data, aes(x = time_stamp)) +
-    geom_line(aes(y = dual_fuel), color = "#F95355") +
-    geom_line(aes(y = nuclear), color = "#B0D894") +
-    geom_line(aes(y = hydro), color = "#57A4B1") +
-    geom_line(aes(y = natural_gas), color = "#FADE89") +
-    geom_line(aes(y = other_fossil_fuels), color = "#957106") +
-    geom_line(aes(y = other_renewables), color = "#4C6472") +
-    geom_line(aes(y = wind), color = "#1BBC9B")
-}
-
-plot_clean_dirty_lines <- function(data) {
-  # Categorizes each fuel source as clean or dirty then plots them as two lines
-  # on a graph
-  ggplot(data %>% categorize_fuels, aes(x = time_stamp)) +
-    geom_line(aes(y = clean_gen), color = "#B0D894") +
-    geom_line(aes(y = dirty_gen), color = "#7c5e05")
-}
-
-categorize_fuels <- function(data) {
-  # Inputs a gen/load dataset and adds four new columns: clean_gen, dirty_gen
-  # and clean_perc, dirty_perc.
-  data <- tibble(data)
-  data$clean_gen <- rowSums(data[CLEAN_FUELS])
-  data$dirty_gen <- rowSums(data[DIRTY_FUELS])
-  
-  totals <- data$clean_gen + data$dirty_gen
-  data$clean_perc <- data$clean_gen / totals
-  data$dirty_perc <- data$dirty_gen / totals
-  
-  data
-}
-
-calculate_fuel_percs <- function(data) {
-  data <- tibble(data)
-  data$total_gen <- rowSums(data[FUEL_COLUMNS])
-  for (fuel_type in FUEL_COLUMNS) {
-    data[[paste(fuel_type, "_perc", sep="")]] <- data[[fuel_type]] / data$total_gen
-  }
-  
-  data
-}
-
-plot_fuel_mix <- function(data) {
-  fuel_perc_cols <- map_chr(FUEL_COLUMNS, function(s) { paste(s, "_perc", sep="") })
-
-  data %>%
-    select(time_stamp, any_of(fuel_perc_cols)) %>%
-    pivot_longer(
-      cols=fuel_perc_cols,
-      names_to="fuel_type",
-    ) %>%
-      
-    ggplot +
-      aes(x = time_stamp, y = value, fill = fuel_type) +
-      geom_bar(stat = "identity") +
-      scale_x_datetime(label = date_format("%Y-%m"), breaks = pretty_breaks(), expand = c(0, 0))
-}
-
-
+```{r}
 data <- read_csv("./derived_data/combined_gen_load.csv") %>%
   categorize_fuels %>%
   calculate_fuel_percs
+
+head(data)
 ```
 
+Looks good! Now let's start crunching numbers...
+
+# Finding the top 10 Demand Days in 2019, 2020, 2021
 ```{r}
 data %>%
   rollup_daily() %>%
-  # Convert MWh into GWh
   select(time_stamp, load) %>%
-  mutate(load = load) %>%
+  # Convert MW into GW
+  mutate(load = load / 1000) %>%
   slice_max(load, n = 10)
 ```
 
+# 2019 Peak Demand Event
 
+## Range of dirty percentages for the peak
 ```{r}
-plot_clean_dirty_mix <- function(data) {
-  long <- data %>%
-    select(time_stamp, clean_perc, dirty_perc, highlighted) %>%
-    pivot_longer(
-      cols=c(clean_perc, dirty_perc),
-      names_to="gen_category",
-    ) %>%
-    mutate(
-       fill_category = case_when(
-        (highlighted & gen_category == "dirty_perc") ~ "dirty_peak",
-        (!highlighted & gen_category == "dirty_perc") ~ "dirty",
-        (highlighted & gen_category == "clean_perc") ~ "clean_peak",
-        (!highlighted & gen_category == "clean_perc") ~ "clean",
-      ),
-    )
-  
-  ggplot(long) +
-    aes(x = time_stamp, y = value, fill = fill_category) +
-    geom_area(stat = "identity", na.rm = TRUE) +
-    scale_x_datetime(
-      label = date_format("%Y-%m"),
-      breaks = pretty_breaks(),
-      expand = c(0, 0),
-    ) +
-    ylab("% Of Generation") +
-    xlab("Date") +
-    scale_y_continuous(labels = scales::percent) +
-    scale_x_datetime(date_breaks = "1 day", date_labels =  "%b %d") +
-    scale_fill_manual(
-      name = "Fuel Source",
-      values = c(
-        "clean_peak" = paste(CLEAN_GEN_COLOR, "FF", sep = ""),
-        "dirty_peak" = paste(DIRTY_GEN_COLOR, "FF", sep = ""),
-        "clean" = paste(CLEAN_GEN_COLOR, "DD", sep = ""),
-        "dirty" = paste(DIRTY_GEN_COLOR, "DD", sep = "")
-      ),
-      labels = c(
-        "clean_peak" = "Clean Fuels",
-        "dirty_peak" = "Dirty Fuels"
-      )
-    ) +
-    theme(
-      panel.background = element_blank(),
-    )
-}
+peak_2019 <- data %>%
+  select_range("2019-07-19", "2019-07-20") %>%
+  select(time_stamp, dirty_perc, clean_perc)
 
-data %>%
-  select_range("2021-06-28", "2021-07-03") %>%
-  highlight_range("2021-06-29", "2021-06-30") %>%
-  plot_clean_dirty_mix()
+range(peak_2019$dirty_perc) * 100
 ```
 
-```{r}
-plot_gen_area <- function(data) {
-  # Plots an area graph, with each section of the area being a different fuel
-  # source at that time of day.
-  long <- data %>%
-    select(time_stamp, any_of(FUEL_COLUMNS)) %>%
-    pivot_longer(
-      cols=any_of(FUEL_COLUMNS),
-      names_to="fuel_type",
-    ) %>%
-    mutate(value = value / 1000)
-  
-  
-  ggplot(long) +
-    aes(x = time_stamp) +
-    geom_area(aes(y = value, fill = fuel_type)) +
-    scale_x_datetime(
-      date_labels = "%b %d",
-      date_breaks = "1 day"
-    ) +
-    ylab("Generation (GW)") +
-    xlab("Date") +
-    scale_fill_manual(
-      name = "Fuel Source",
-      values = c(
-        "nuclear" = "#5EBD3E",
-        "hydro" = "#009CDF",
-        "wind" = "#973999",
-        "natural_gas" = "#FFB900",
-        "dual_fuel" = DIRTY_GEN_COLOR,
-        "other_renewables" = "#00B4FF",
-        "other_fossil_fuels" = "#515151"
-      ),
-      labels = c(
-        "nuclear" = "Nuclear",
-        "hydro" = "Hydro",
-        "wind" = "Wind",
-        "natural_gas" = "Natural Gas",
-        "dual_fuel" = "Dual Fuel",
-        "other_renewables" = "Other Renewables",
-        "other_fossil_fuels" = "Other Fossil Fuels"
-      )
-    ) +
-    theme(
-      panel.background = element_blank(),
-    )
-}
+## Fuel mix breakdown
+Although I didn't end up using this in the final post, it was helpful to compare how much of each fuel mix was being used while I was trying to gather data on what was going on.
 
+```{r}
+data %>% 
+  select_range("2019-07-19", "2019-07-20") %>%
+  plot_line_per_fuel()
+```
+
+## Clean vs Dirty Chart
+
+This is the chart I ended up using for the post, though I did some post-processing after generating it in R.
+
+```{r}
+data %>%
+  select_range("2019-07-19", "2019-07-20") %>%
+  plot_clean_dirty_mix() +
+    ggtitle("Hourly Generation Mix as % Clean vs Dirty")
+```
+
+## Fuel Mix Area Chart
+This is half of the 2021 vs 2019 chart I stitched together in post-processing before adding to the post.
+
+```{r}
+data %>%
+  select_range("2019-07-19", "2019-07-20") %>%
+  plot_gen_area() +
+    ylim(0, 375)
+```
+
+# 2021 Peak Demand Event
+## Dirty % Range
+Calculating the range of dirty percentages during the 2 day period
+```{r}
+peak_2021 <- data %>%
+  select_range("2021-06-29", "2021-06-30") %>%
+  select(time_stamp, dirty_perc, clean_perc)
+
+range(peak_2021$dirty_perc) * 100
+```
+
+## Clean vs Dirty Chart
+
+```{r}
+data %>%
+  select_range("2021-06-29", "2021-06-30") %>%
+  plot_clean_dirty_mix() +
+  ggtitle("Hourly Generation Mix as % Clean vs Dirty")
+```
+
+## Fuel Mix Area Chart
+This is the other half of the 2021 vs 2019 chart.
+```{r}
+data %>%
+  select_range("2021-06-29", "2021-06-30") %>%
+  plot_gen_area() +
+    ylim(0, 375)
+```
+
+# Average Day
+This section is for generating the charts I used on the average February days.
+
+## Fuel Mix Area Chart
+```{r}
 data %>%
   select_range("2021-02-02", "2021-02-03") %>%
-  plot_gen_area()
+  plot_gen_area() +
+  ggtitle("Hourly Generation Fuel Mix")
+```
+
+## Average Day Clean vs Dirty Mix
+```{r}
+data %>%
+  select_range("2021-02-02", "2021-02-03") %>%
+  plot_clean_dirty_mix() +
+  ggtitle("Hourly Generation Mix as % Clean vs Dirty")
 ```

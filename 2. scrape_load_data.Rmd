@@ -10,7 +10,7 @@ library(httr)
 library(xml2)
 library(stringr)
 library(rlist)
-archive_html <- httr::content(httr::GET('http://mis.nyiso.com/public/P-58Blist.htm'))
+archive_html <- httr::content(httr::GET('http://mis.nyiso.com/public/P-58Clist.htm'))
 
 archive_html
 ```
